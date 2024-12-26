@@ -36,7 +36,9 @@ async fn main() -> io::Result<()> {
                     *sca = client_addr;
                 }
 
-                if let Err(e) = wireguard_socket_clone.send_to(&buf[..len], wireguard_server_addr).await {
+                let deccrypted_data = ctr_encrypt(&buf[..len], b"32000000000000000000000000000000", b"1600000000000000");
+
+                if let Err(e) = wireguard_socket_clone.send_to(&deccrypted_data, wireguard_server_addr).await {
                     eprintln!("Failed to send to WireGuard server: {}", e);
                 }
             }
@@ -55,7 +57,9 @@ async fn main() -> io::Result<()> {
                     client_addr = *saved_client_addr_clone_2.lock().await;
                 }
 
-                if let Err(e) = forwarding_socket_clone.send_to(&buf[..response_len], client_addr).await {
+                let encrypted_data = ctr_encrypt(&buf[..response_len], b"32000000000000000000000000000000", b"1600000000000000");
+
+                if let Err(e) = forwarding_socket_clone.send_to(&encrypted_data, client_addr).await {
                     eprintln!("Failed to send to client: {}", e);
                 }
             }
@@ -66,4 +70,81 @@ async fn main() -> io::Result<()> {
     let _ = tokio::try_join!(forward_to_wireguard, forward_to_client);
 
     Ok(())
+}
+
+
+
+
+
+
+
+
+
+/// AES 256
+// Libraries
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
+
+// AES Encryption and Decryption
+pub fn aes_encrypt(plaintext: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    let key = aes::cipher::generic_array::GenericArray::from_slice(key);
+    let cipher = aes::Aes256::new(key);
+
+    let mut ciphertext = plaintext.to_vec();
+    // Pad if necessary (simple PKCS#7 padding for demonstration)
+    let padding_len = 16 - (ciphertext.len() % 16);
+    for _ in 0..padding_len {
+        ciphertext.push(padding_len as u8);
+    }
+
+    let mut blocks = ciphertext.chunks_exact_mut(16);
+    for block in &mut blocks {
+        let block = aes::cipher::generic_array::GenericArray::from_mut_slice(block);
+        cipher.encrypt_block(block);
+    }
+    ciphertext
+}
+
+pub fn aes_decrypt(ciphertext: &[u8], key: &[u8; 32]) -> Vec<u8> {
+    let key = aes::cipher::generic_array::GenericArray::from_slice(key);
+    let cipher = aes::Aes256::new(key);
+
+    let mut plaintext = ciphertext.to_vec();
+    let mut blocks = plaintext.chunks_exact_mut(16);
+    for block in &mut blocks {
+        let block = aes::cipher::generic_array::GenericArray::from_mut_slice(block);
+        cipher.decrypt_block(block);
+    }
+
+    // Remove padding (PKCS#7)
+    let padding_len = *plaintext.last().unwrap() as usize;
+    plaintext.truncate(plaintext.len() - padding_len);
+    plaintext
+}
+
+
+
+////// CTR mode
+// Libraries
+use aes::Aes256;
+use ctr::cipher::{KeyIvInit, StreamCipher};
+use ctr::Ctr128BE;
+// use tokio::io::AsyncRead; // Import the CTR mode
+
+type Aes256Ctr = Ctr128BE<Aes256>; // Define the Aes256Ctr type
+
+// AES-CTR Encryption and Decryption
+pub fn ctr_encrypt(plaintext: &[u8], key: &[u8; 32], iv: &[u8; 16]) -> Vec<u8> {
+    let key = aes::cipher::generic_array::GenericArray::from_slice(key);
+    let iv = aes::cipher::generic_array::GenericArray::from_slice(iv);
+    let mut cipher = Aes256Ctr::new(key, iv);
+
+    let mut ciphertext = plaintext.to_vec();
+    cipher.apply_keystream(&mut ciphertext);
+
+    ciphertext
+}
+
+pub fn ctr_decrypt(ciphertext: &[u8], key: &[u8; 32], iv: &[u8; 16]) -> Vec<u8> {
+    // Decryption is the same as encryption in CTR mode
+    ctr_encrypt(ciphertext, key, iv)
 }
